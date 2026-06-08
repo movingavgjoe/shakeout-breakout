@@ -77,6 +77,12 @@ def _throttle() -> None:
 
 
 def _get_json(url: str) -> dict:
+    if not config.EDGAR_USER_AGENT:
+        raise RuntimeError(
+            "SEC EDGAR requires a contact email in the User-Agent. "
+            "Set the EDGAR_USER_AGENT environment variable, e.g.:\n"
+            '  export EDGAR_USER_AGENT="shakeout-breakout you@example.com"'
+        )
     _throttle()
     headers = {"User-Agent": config.EDGAR_USER_AGENT, "Accept-Encoding": "gzip, deflate"}
     resp = requests.get(url, headers=headers, timeout=config.HTTP_TIMEOUT)

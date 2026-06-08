@@ -19,7 +19,7 @@ data sources** (no API keys, no paid accounts).
 
 | Data | Source | Key? |
 |------|--------|------|
-| Daily OHLCV prices | [Stooq](https://stooq.com) direct CSV | none |
+| Daily OHLCV prices | [yfinance](https://github.com/ranaroussi/yfinance) (Yahoo) | none |
 | Trailing fundamentals (revenue, EBITDA, EPS, OCF, capex, debt, cash, shares) | [SEC EDGAR companyfacts](https://www.sec.gov/edgar/sec-api-documentation) | none |
 | Forward estimates (fwd EPS, fwd EBITDA, growth) | [yfinance](https://github.com/ranaroussi/yfinance) (Yahoo) | none |
 
@@ -29,10 +29,12 @@ data sources** (no API keys, no paid accounts).
   **8 req/s** and sends a descriptive `User-Agent` (required, or SEC returns 403).
   Set your own via the `EDGAR_USER_AGENT` env var. Fundamentals are cached, so
   EDGAR is hit at most once per ticker per quarter.
-- **Stooq** — no documented limit; we cache each ticker/date-range CSV so repeat
-  runs make zero network calls.
-- **yfinance** — unofficial scraper; Yahoo throttles aggressively and can
-  temporarily block your IP. Estimates are cached daily to minimize calls.
+- **yfinance** — used for both prices and forward estimates. It's an unofficial
+  scraper; Yahoo throttles aggressively and can temporarily block your IP.
+  Everything is cached (prices per ticker/date-range, estimates daily) so repeat
+  runs make few or zero network calls.
+- **Stooq** — dropped. Its CSV endpoint is now behind a JavaScript anti-bot
+  challenge that plain HTTP clients can't pass.
 
 ## Caching
 
@@ -42,8 +44,50 @@ fundamentals never change, so re-runs are instant and limit-free. Delete files i
 
 ## Install
 
+**Requires Python 3.11+.** Current pandas/yfinance use syntax that fails at
+runtime on Python 3.8 (which is end-of-life). Check with `python3.12 --version`;
+install via `brew install python@3.12` if needed.
+
+Use a virtual environment so this project's dependencies (it upgrades numpy,
+pandas, etc.) don't disturb your system or Anaconda base environment:
+
 ```bash
+# 1. Create an isolated environment in the project folder (use a modern Python)
+python3.12 -m venv .venv
+
+# 2. Activate it
+source .venv/bin/activate        # macOS / Linux
+# .venv\Scripts\activate         # Windows (PowerShell)
+
+# 3. Install dependencies into the environment
 pip install -r requirements.txt
+```
+
+Run all scripts and tests with the environment active. When finished, run
+`deactivate` to exit it. `.venv/` is already git-ignored.
+
+> Skipping the venv and running a bare `pip install -r requirements.txt` will
+> install into whatever Python is active — fine in a pinch, but it can upgrade
+> shared packages (e.g. numpy) and break other tools in that environment.
+
+## Required setup: EDGAR contact email
+
+SEC EDGAR requires a contact email in the request `User-Agent` (it returns a 403
+otherwise). This is read from the `EDGAR_USER_AGENT` environment variable — no
+email is hardcoded in the source, so nothing personal ends up in git. EDGAR
+calls raise a clear error until you set it.
+
+```bash
+# one-off (current shell only) — use your own email; never hardcode it in a file
+export EDGAR_USER_AGENT="shakeout-breakout you@example.com"
+```
+
+To make it permanent, add that line to your `~/.zshrc` (or `~/.bashrc`), or put
+it in a `.env` file (already git-ignored) and source it before running:
+
+```bash
+echo 'export EDGAR_USER_AGENT="shakeout-breakout you@example.com"' >> ~/.zshrc
+source ~/.zshrc
 ```
 
 ## Usage

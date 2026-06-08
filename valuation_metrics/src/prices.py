@@ -1,16 +1,23 @@
-"""Daily OHLCV prices from Stooq's free direct-CSV endpoint (no key, no login)."""
+"""Daily OHLCV prices from yfinance (Yahoo).
+
+Stooq was the original source but its CSV endpoint is now behind a JavaScript
+anti-bot challenge that plain HTTP clients can't pass, so prices come from
+yfinance, which uses Yahoo's JSON endpoints (no key, no login).
+
+Schema returned everywhere: Date, Open, High, Low, Close, Volume.
+"""
 from __future__ import annotations
 
-import io
 from datetime import date, datetime, timedelta
-from typing import Optional, Union
+from typing import Union
 
 import pandas as pd
-import requests
 
 from . import cache, config
 
 DateLike = Union[str, date, datetime]
+
+NEEDED = ["Date", "Open", "High", "Low", "Close", "Volume"]
 
 
 def _to_date(d: DateLike) -> date:
@@ -21,46 +28,55 @@ def _to_date(d: DateLike) -> date:
     return datetime.strptime(d, "%Y-%m-%d").date()
 
 
-def _stooq_symbol(ticker: str) -> str:
-    """Map a US ticker to Stooq's symbol convention (lowercase, .us suffix).
+def _norm_key(ticker: str) -> str:
+    return ticker.strip().lower().replace(".", "-")
 
-    Class-share dots become dashes on Stooq, e.g. BRK.B -> brk-b.us.
-    """
-    t = ticker.strip().lower().replace(".", "-")
-    return f"{t}{config.STOOQ_SUFFIX}"
+
+def _fetch_yfinance(ticker: str, start_d: date, end_d: date) -> pd.DataFrame:
+    import yfinance as yf  # lazy import
+
+    tk = yf.Ticker(ticker)
+    # history end is exclusive, so add a day; auto_adjust=False keeps the actual
+    # traded close (the price used for market cap / P/E on that date).
+    hist = tk.history(
+        start=start_d.isoformat(),
+        end=(end_d + timedelta(days=1)).isoformat(),
+        auto_adjust=False,
+    )
+    if hist is None or hist.empty:
+        raise ValueError(f"yfinance returned no data for {ticker} ({start_d}..{end_d})")
+
+    hist = hist.reset_index()
+    # The index column is "Date" for daily data; normalize and drop any timezone.
+    if "Date" not in hist.columns and "Datetime" in hist.columns:
+        hist = hist.rename(columns={"Datetime": "Date"})
+    s = pd.to_datetime(hist["Date"])
+    try:
+        s = s.dt.tz_localize(None)      # tz-aware -> naive
+    except TypeError:
+        pass                            # already tz-naive
+    hist["Date"] = s.dt.date
+
+    missing = [c for c in NEEDED if c not in hist.columns]
+    if missing:
+        raise ValueError(f"yfinance missing columns {missing}; got {list(hist.columns)}")
+    return hist[NEEDED].copy()
 
 
 def fetch_prices(ticker: str, start: DateLike, end: DateLike) -> pd.DataFrame:
-    """Download daily OHLCV for [start, end] from Stooq, with CSV caching.
+    """Daily OHLCV for [start, end] from yfinance, with CSV caching.
 
-    Returns a DataFrame with columns: Date, Open, High, Low, Close, Volume.
+    Returns columns: Date, Open, High, Low, Close, Volume.
     """
     start_d, end_d = _to_date(start), _to_date(end)
-    symbol = _stooq_symbol(ticker)
-    name = f"prices_{symbol}_{start_d:%Y%m%d}_{end_d:%Y%m%d}"
+    name = f"prices_{_norm_key(ticker)}_{start_d:%Y%m%d}_{end_d:%Y%m%d}"
 
     cached = cache.load(name, config.PRICE_CACHE_MAX_AGE_DAYS)
     if cached is not None and not cached.empty:
         cached["Date"] = pd.to_datetime(cached["Date"]).dt.date
         return cached
 
-    url = config.STOOQ_CSV_URL.format(
-        symbol=symbol, d1=f"{start_d:%Y%m%d}", d2=f"{end_d:%Y%m%d}"
-    )
-    resp = requests.get(url, timeout=config.HTTP_TIMEOUT)
-    resp.raise_for_status()
-    text = resp.text.strip()
-
-    # Stooq returns the literal "No data" when a symbol/range is empty.
-    if not text or text.lower().startswith("no data") or "," not in text.splitlines()[0]:
-        raise ValueError(
-            f"Stooq returned no data for {symbol} ({start_d}..{end_d}). "
-            "Check the ticker symbol / Stooq suffix."
-        )
-
-    df = pd.read_csv(io.StringIO(text))
-    # Expected columns: Date, Open, High, Low, Close, Volume
-    df = df[["Date", "Open", "High", "Low", "Close", "Volume"]].copy()
+    df = _fetch_yfinance(ticker, start_d, end_d)
     cache.save(name, df)
     df["Date"] = pd.to_datetime(df["Date"]).dt.date
     return df
